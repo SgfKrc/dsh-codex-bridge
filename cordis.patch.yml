@@ -1,0 +1,85 @@
+# dsh-codex-bridge — DSH-side bridge to the Reasonix DeepSeek worker.
+#
+# This bundle is PATCH-ONLY: it carries no runtime code of its own. It reuses
+# the already-working `reasonix-codex-bridge` MCP server (src/server.mjs) and
+# publishes it through DSH's built-in MCP client
+# (`@deepseek-ai/dsh-mcp-client`), which registers every MCP tool on
+# `ctx.tools` under the public name `mcp__<serverName>__<rawName>`.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# THIS FILE IS A REDACTED TEMPLATE. Every machine-specific value (the workspace
+# root, the Reasonix CLI path, the model ref) is a placeholder on purpose — the
+# repository must not carry one machine's absolute paths.
+#
+# Put your real values in the PROFILE patch instead, which dsh applies after
+# every bundle layer:
+#
+#   ~/.dsh/profiles/<profile>/cordis.patch.yml
+#
+# It is id-targeted, exactly like this bundle's entries:
+#
+#   - id: reasonix-mcp-read
+#     config: { ... }
+#   - id: reasonix-mcp-write
+#     config: { ... }
+#
+# dsh assigns the whole `config` object (`target[key] = value`), so an override
+# REPLACES the config rather than deep-merging it: repeat every field you want
+# to keep. See README 「占位符与本机配置」 for a ready-to-copy example.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Two role-exclusive channels, mirroring the Codex MCP registration exactly:
+#
+#   channel                     subagent profile        role   accepted modes
+#   mcp__reasonix__*            deepseek-worker         read   inspect/review/plan
+#   mcp__reasonix-write__*      deepseek-worker-write   write  implement (+resume/rollback)
+#
+# The bridge itself enforces role exclusivity in BOTH directions: a read-role
+# server rejects `implement`, and a write-role server rejects
+# `inspect`/`review`/`plan`. Do not collapse these into one channel.
+#
+# `serverName` must match /^[A-Za-z0-9_-]{1,32}$/ and be unique per agent
+# scope; `reasonix-write` is valid and stays distinct from `reasonix`.
+#
+# NOTE ON TIMEOUTS: mcp-client defaults `toolCallTimeoutMs` to 60s, while the
+# bridge's own per-mode budgets are far larger (inspect 600s; review / plan /
+# implement 900s; hard cap 1800s). The value below is therefore raised to the
+# bridge's hard cap so the bridge — not the MCP client — owns the deadline.
+# Leaving the default would sever long worker runs mid-flight.
+
+- insert:
+    # ── read channel (role: read) ───────────────────────────────────────────
+    - id: reasonix-mcp-read
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: reasonix
+        command: node
+        args:
+          - '<workspace-root>/reasonix-codex-bridge/src/server.mjs'
+        env:
+          REASONIX_EXE: '<path-to-reasonix-cli.exe>'
+          REASONIX_ROOT: '<workspace-root>'
+          REASONIX_SUBAGENT: deepseek-worker
+          REASONIX_MODEL_REF: '<reasonix-model-ref>'
+        toolCallTimeoutMs: 1800000
+        failOnStartupError: false
+
+    # ── write channel (role: write) ─────────────────────────────────────────
+    # Requires, simultaneously: this write profile, `allowWrite: true`,
+    # a non-empty `allowedPaths`, and a clean Git tree.
+    - id: reasonix-mcp-write
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        transport: stdio
+        serverName: reasonix-write
+        command: node
+        args:
+          - '<workspace-root>/reasonix-codex-bridge/src/server.mjs'
+        env:
+          REASONIX_EXE: '<path-to-reasonix-cli.exe>'
+          REASONIX_ROOT: '<workspace-root>'
+          REASONIX_SUBAGENT: deepseek-worker-write
+          REASONIX_MODEL_REF: '<reasonix-model-ref>'
+        toolCallTimeoutMs: 1800000
+        failOnStartupError: false

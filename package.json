@@ -1,0 +1,17 @@
+{
+  "name": "dsh-codex-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DSH-side bridge to the Reasonix DeepSeek worker: reuses the reasonix-codex-bridge MCP server through DSH's built-in mcp-client, exposing read and write channels as native harness tools.",
+  "type": "module",
+  "license": "MIT",
+  "files": [
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
