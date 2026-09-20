@@ -2,15 +2,16 @@
 
 DSH 侧的 Reasonix DeepSeek worker 桥接器。
 
-它**不含任何运行时代码**——是一个纯 patch bundle，把已经跑通的
-`reasonix-codex-bridge/src/server.mjs`（MCP stdio 服务）通过 DSH 内置的
+它**把桥接器本体 vendor 进本仓库**（`src/`，来自 `reasonix-codex-bridge`，见「vendor 与同步」），
+再用一个纯 patch bundle 把这份 MCP stdio 服务通过 DSH 内置的
 [`@deepseek-ai/dsh-mcp-client`](https://www.npmjs.com/package/@deepseek-ai/dsh-mcp-client)
 发布为宿主原生工具。
 
 ## 为什么能这么做
 
 `reasonix-codex-bridge` 实现的是 **MCP 协议服务端**，而 MCP 是对称的：
-同一个 `server.mjs` 既能被 Codex 消费，也能被 DSH 消费。DSH 已内置生产级 MCP
+同一个 `server.mjs` 既能被 Codex 消费，也能被 DSH 消费——本仓库里就是那份文件的 vendor 副本。
+DSH 已内置生产级 MCP
 客户端（791 行），自带：
 
 - stdio / Streamable-HTTP 双传输
@@ -20,7 +21,7 @@ DSH 侧的 Reasonix DeepSeek worker 桥接器。
 - 命名冲突时整代回滚
 - effect 作用域生命周期（卸载即净、HMR 热替换）
 
-因此**桥接器本体 100% 复用，DSH 侧只需声明式装配**。
+因此**桥接器本体原样复用**——本仓库自带 vendor 副本，DSH 侧只需声明式装配。
 
 ## 工具命名
 
@@ -86,7 +87,7 @@ patch 里通过 `env` 注入，与 Codex 侧完全一致的契约：
 
 ### 写策略
 
-写门槛在 `reasonix-codex-bridge/bridge.config.json`（每机一份）：
+写门槛在本仓库的 `bridge.config.json`（每机一份、不进仓库；用 `node src/configure.mjs use <ref>` 生成）：
 
 ```json
 {
@@ -120,6 +121,26 @@ worker 崩溃同样回滚，不留半成品。
 
 无需先清空工作区：`snapshot` 模式已实测可在脏树下正常写入并精确回滚。
 
+## vendor 与同步
+
+`src/`（12 个模块）、`test/`、`scripts/check-readme-links.mjs`、`scripts/acp-acceptance.mjs`、
+`prompts/`、`LICENSE` 都是从 [`reasonix-codex-bridge`](https://github.com/SgfKrc/reasonix-codex-bridge)
+**原样复制**过来的，因此本仓库不依赖工作区里的另一个仓库目录。
+
+- 来源与逐文件 sha256 记录在 `VENDOR.json`（含上游 commit）。
+- 同步工具是 `scripts/sync-vendor.mjs`：
+
+  ```powershell
+  node scripts/sync-vendor.mjs --check                     # 本地是否被改过 / 上游是否已漂移
+  node scripts/sync-vendor.mjs --update --upstream <dir>    # 从上游 clone 重新复制并更新 VENDOR.json
+  ```
+
+- **两份代码必然要同步**：上游是唯一真源。改了上游的 `src/` 就要重新 vendor，否则 DSH 侧仍在跑旧副本；
+  反之改动这边副本里的 vendored 文件会被 `--check` 报成 `MODIFIED`，`--update` 会覆盖它。
+  本仓库自己的文件（`cordis.patch.yml`、`README.md`、`CHANGELOG.md`、`package.json`、
+  `.gitignore`、`scripts/sync-vendor.mjs`）不在 vendor 清单里，不会被覆盖。
+- 自带测试与上游同一套、零改动，可独立跑：`node --test`（112 个用例）。
+
 ## 占位符与本机配置
 
 本仓库的 `cordis.patch.yml` 是**脱敏模板**——`args` / `env` 里的本机专属值都是占位符
@@ -136,7 +157,7 @@ worker 崩溃同样回滚，不留半成品。
     serverName: reasonix
     command: node
     args:
-      - '<workspace-root>/reasonix-codex-bridge/src/server.mjs'
+      - '<workspace-root>/dsh-codex-bridge/src/server.mjs'
     env:
       REASONIX_EXE: '<path-to-reasonix-cli.exe>'
       REASONIX_ROOT: '<workspace-root>'

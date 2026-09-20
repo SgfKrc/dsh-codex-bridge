@@ -1,0 +1,9 @@
+# Per-machine bridge configuration (create it with `node src/configure.mjs use <ref>`)
+bridge.config.json
+*.doctor-cache.json
+*.jsonl
+
+# Per-machine preset tables (copy presets.example.json to create one)
+presets.json
+
+node_modules/

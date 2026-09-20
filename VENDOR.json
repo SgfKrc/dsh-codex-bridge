@@ -1,0 +1,29 @@
+{
+  "upstream": {
+    "repository": "https://github.com/SgfKrc/reasonix-codex-bridge",
+    "commit": "987ed9bbf999e4ba9b18d8267065fbccd58753bc",
+    "path": "../reasonix-codex-bridge"
+  },
+  "syncedAt": "2026-09-20T06:01:20.318Z",
+  "files": {
+    "LICENSE": "0e6a994884ca889f9806ec1286a2282d1baef7c72dca21dd96cc982f803c2ab5",
+    "prompts/deepseek-worker-prompt.md": "15f84ec46402162d96047e07b3e751393b6c8f9310fbed51f6b68e770ec66c5b",
+    "prompts/deepseek-worker-write-prompt.md": "8acae4cb1165db3e25514525d2ff90334be0caad3e56a731a5ee32fb276bc41f",
+    "scripts/acp-acceptance.mjs": "6b7cb944eba827cb1e407dc96914f3809680aa2c5fbe8c44475026dd433cf710",
+    "scripts/check-readme-links.mjs": "55e0f4b94dc4798415fb3531d5da6b4b52d85b0a0d06b2a315d276f6143ebeb8",
+    "src/acp-client.mjs": "5ec3f3caaabc639340ea18a150e726984ea1e872d255f389f3b7620e937b466e",
+    "src/acp-prototype.mjs": "306e637515c1c30b17b5cfe043b094629bcf28bafdefa61b1957bbffde014276",
+    "src/acp-registry.mjs": "59b2371c4d16e1c6a6398dcb22b87b016a67a7f789f2c9edec254906c7a51ad0",
+    "src/acp-security.mjs": "faae2df252d261e1637b98725941f566c2ea9e0759b73a96005fef33bbc0e4a3",
+    "src/acp-session.mjs": "5776fd731ca67758b15193a17bfb68a5b1039a87a17199922fedf34256e2ae65",
+    "src/acp-transport.mjs": "e58a4ce6cf96548938c4ad8cad814fa7c2e34d6c07d81b5e5065c130d41763a5",
+    "src/checkpoint.mjs": "647429a1a22018bdaa0676678fdfe0aa47f0b40a10b0df89b45d807bb379ed80",
+    "src/config.mjs": "00fa8263739bd49b2e923fd86775425cb350a4610ed0ea1ec580155f5dd08562",
+    "src/configure.mjs": "9454ad1723d003d57c61abe466fb81665199a44e2964da11f8b38d81ce9d13e3",
+    "src/server.mjs": "f6542a7c0fc82e495589280c03dde9a647917c1d83f6f95d1501f8e64a1443d0",
+    "src/snapshot.mjs": "c6f2ca7ecc2d9f27f1b06d6f73708fa573905c7f858507565bbeba16f7a9e082",
+    "src/workflow.mjs": "8976549579c76674561133d9868aec832d9dad44b4322ebddd9ee63a029a2b3f",
+    "test/bridge.test.mjs": "0a8ed42b738012e5226153b1cb63b7718ed12cd1cf40427f37c6f6eb786e1953",
+    "test/snapshot.test.mjs": "73eecc0d3b19a4e495b68f6fe93520f6706a72acd452d4c9a0610089621189f8"
+  }
+}

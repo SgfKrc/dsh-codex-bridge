@@ -1,8 +1,8 @@
 # dsh-codex-bridge — DSH-side bridge to the Reasonix DeepSeek worker.
 #
-# This bundle is PATCH-ONLY: it carries no runtime code of its own. It reuses
-# the already-working `reasonix-codex-bridge` MCP server (src/server.mjs) and
-# publishes it through DSH's built-in MCP client
+# This bundle is PATCH-ONLY with respect to the DSH wiring. The MCP server it
+# declares is VENDORED into this repository under src/ (see VENDOR.json), so it
+# does not borrow another checkout; it is published through DSH's built-in MCP client
 # (`@deepseek-ai/dsh-mcp-client`), which registers every MCP tool on
 # `ctx.tools` under the public name `mcp__<serverName>__<rawName>`.
 #
@@ -56,7 +56,7 @@
         serverName: reasonix
         command: node
         args:
-          - '<workspace-root>/reasonix-codex-bridge/src/server.mjs'
+          - '<workspace-root>/dsh-codex-bridge/src/server.mjs'
         env:
           REASONIX_EXE: '<path-to-reasonix-cli.exe>'
           REASONIX_ROOT: '<workspace-root>'
@@ -75,7 +75,7 @@
         serverName: reasonix-write
         command: node
         args:
-          - '<workspace-root>/reasonix-codex-bridge/src/server.mjs'
+          - '<workspace-root>/dsh-codex-bridge/src/server.mjs'
         env:
           REASONIX_EXE: '<path-to-reasonix-cli.exe>'
           REASONIX_ROOT: '<workspace-root>'
