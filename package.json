@@ -1,32 +1,20 @@
 {
-  "name": "dsh-codex-bridge",
-  "version": "0.1.0",
+  "name": "dsh-subagent-bridge",
+  "version": "0.2.0",
   "private": true,
-  "description": "DSH-side bridge to the Reasonix DeepSeek worker: vendors the reasonix-codex-bridge MCP server (src/) and publishes it through DSH's built-in mcp-client, exposing read and write channels as native harness tools.",
+  "description": "Zero-dependency MCP stdio bridge that publishes the DSH headless/ACP harness as a Codex-callable subagent tool, so DSH and Reasonix can be compared as subagent harnesses on the same model.",
   "type": "module",
   "engines": { "node": ">=20" },
   "license": "MIT",
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/server.mjs && node --check src/acp-client.mjs"
+  },
   "files": [
-    "cordis.patch.yml",
-    "README.md",
-    "CHANGELOG.md",
-    "LICENSE",
-    "VENDOR.json",
     "src",
     "test",
     "scripts",
-    "prompts"
-  ],
-  "scripts": {
-    "test": "node --test",
-    "check": "node --check src/server.mjs && node --check src/config.mjs && node --check src/configure.mjs && node --check src/workflow.mjs && node --check src/acp-prototype.mjs && node --check src/acp-client.mjs && node --check src/acp-security.mjs && node --check src/acp-session.mjs && node --check src/acp-registry.mjs && node --check src/acp-transport.mjs && node --check src/checkpoint.mjs && node --check src/snapshot.mjs && node --check scripts/check-readme-links.mjs && node --check scripts/acp-acceptance.mjs && node --check scripts/sync-vendor.mjs",
-    "check:links": "node scripts/check-readme-links.mjs",
-    "sync:check": "node scripts/sync-vendor.mjs --check",
-    "sync:update": "node scripts/sync-vendor.mjs --update"
-  },
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    }
-  }
+    "acp-route.patch.yml",
+    "README.md"
+  ]
 }

@@ -1,119 +1,164 @@
-# dsh-codex-bridge
+# dsh-subagent-bridge
 
-DSH 侧的 Reasonix DeepSeek worker 桥接器。
+把 **DSH headless / ACP harness 发布成 Codex 可调用的 MCP 工具** —— 零依赖的 stdio MCP server。
 
-它把桥接器本体 **vendor 进本仓库**（`src/`，来自 `reasonix-codex-bridge`，见「vendor 与同步」），
-再用一个纯 patch bundle 把这份 MCP stdio 服务通过 DSH 内置的
-[`@deepseek-ai/dsh-mcp-client`](https://www.npmjs.com/package/@deepseek-ai/dsh-mcp-client)
-发布为宿主原生工具。
+> **仓库沿革**：本仓库原名 `dsh-codex-bridge`，早期内容是 Reasonix worker 桥接器的
+> vendor 副本（含 DSH 装配模板）。自 **v0.2.0** 起改为本桥接器：不再 vendor 任何
+> Reasonix 代码，接入的 harness 也从 Reasonix 换成了 DSH 本身。旧的 vendor 内容与
+> `VENDOR.json` 已移除。Git 远端仍为 `SgfKrc/dsh-codex-bridge`。
 
-MCP 是对称的：同一个 `server.mjs` 既能被 Codex 消费，也能被 DSH 消费。DSH 的 mcp-client
-自带 stdio / Streamable-HTTP 双传输、凭据清洗（`scrubbedParentEnv`）、断线指数退避重连、
-`tools/list` 变更自动重同步、命名冲突整代回滚，以及卸载即净的 effect 生命周期——因此
-DSH 侧只需要声明式装配。
+## 为什么要它
 
-## 工具命名
+它补上了对比实验里缺的那一环。Reasonix 通道让 Codex 能通过 MCP 调用 Reasonix 子智能体；
+但 DSH 侧只有一个 **CLI**（`dsh --profile headless`），Codex 无法直接调用。本桥接器把那个
+CLI 包成 MCP 工具，于是 Codex 可以这样对比：
 
-DSH 的 mcp-client 把 MCP 工具注册为 `mcp__<serverName>__<rawName>`：
-
-| 通道 | 子智能体档案 | 角色 | 接受的 mode |
-|---|---|---|---|
-| `reasonix` | `deepseek-worker` | read | `inspect` / `review` / `plan` |
-| `reasonix-write` | `deepseek-worker-write` | write | `implement`（另有 `resume` / `rollback`） |
-
-每个通道各有 7 个工具：`reasonix_run`、`reasonix_resume`、`reasonix_cancel`、
-`reasonix_events`、`reasonix_rollback`、`reasonix_exec`、`reasonix_status`。
-
-角色互斥由桥接器自身强制，双向生效（已实测）：
-
-| | `mode=inspect` | `mode=implement` |
-|---|---|---|
-| `reasonix`（read） | ✅ 执行 | ⛔ `requires an explicit write-role subagent` |
-| `reasonix-write`（write） | ⛔ `requires a read-role subagent; selected role is write` | ⛔ 需干净 Git 树（`cleanTreePolicy=strict`） |
-
-## 装配
-
-`~/.dsh/profiles/web/` 里：
-
-- `package.json` 的 `dependencies` 加 `"dsh-codex-bridge": "link:<workspace-root>/dsh-codex-bridge"`，
-  `dsh.profile.bundles` 加 `"dsh-codex-bridge"`；
-- `node_modules/dsh-codex-bridge` 是指向本目录的 junction；
-- 本机实际值（工作区根、CLI 路径、模型引用）在 profile 的 `cordis.patch.yml` 里按 entry id
-  覆盖，见「本机配置」。
-
-验证组装（不改动运行中的宿主）：
-
-```powershell
-node "$(npm root -g)/@deepseek-ai/dsh/lib/bin.js" --profile web --dump-config |
-  Select-String -Pattern "reasonix" -Context 2,12
+```
+GPT（Codex，主控）
+   ├─ 子 agent harness = DSH       → mcp__dsh_subagent__dsh_run
+   └─ 子 agent harness = Reasonix  → reasonix_local / reasonix_write
 ```
 
-## 关键配置
+两条链路的模型可对齐到同一个 deepseek 模型，因此**产出的差异可归因于 harness 本身**，
+而不是模型。
 
-**超时预算**：`mcp-client` 的 `toolCallTimeoutMs` 默认仅 60s，低于桥接器的 mode 预算
-（`inspect` 600s、`review`/`plan`/`implement` 900s，硬上限 1800s），会让长任务跑到一半被客户端
-切断。本 bundle 已上调到 1800000ms（1800s），让桥接器而非客户端掌握截止时间。Codex 侧是同一个
-道理（`~/.codex/config.toml` 两通道各加 `tool_timeout_sec = 1800.0`）；两边独立配置，调整预算时都要同步。
+## 工具面
 
-**环境变量**（patch 里通过 `env` 注入，与 Codex 侧同一契约）：
+刻意只有两个工具 —— 这一层的职责是"跑一个任务并拿回结果"，不是复刻 Reasonix 通道的
+全套编排能力：
 
-| 变量 | 作用 |
+| 工具 | 作用 |
 |---|---|
-| `REASONIX_EXE` | Reasonix CLI 路径（`v1.38.7`） |
-| `REASONIX_ROOT` | 工作区根（`<workspace-root>`） |
-| `REASONIX_SUBAGENT` | **决定通道角色**：`deepseek-worker`（read）/ `deepseek-worker-write`（write） |
-| `REASONIX_MODEL_REF` | 模型引用，必须在 Reasonix inventory 中存在 |
+| `dsh_run` | 跑一个任务，返回子 agent 的**最终答复**；支持 `per-call`（默认）与 `acp` 两种传输 |
+| `dsh_status` | 报告配置与限额，**不调用模型** |
 
-**写策略**：门槛在同目录的 `bridge.config.json`（每机一份、不进仓库，用
-`node src/configure.mjs use <ref>` 生成）。`implement` 需同时满足 write 档案 + `allowWrite: true`
-+ `allowedPaths` 非空；越界写入与 worker 崩溃都会自动回滚。`cleanTreePolicy` 用 `snapshot`
-而非 `strict`——`strict` 要求整树干净，会把写通道废掉；`snapshot` 先对 `allowedPaths` 内的脏文件
-做内容快照，回滚时逐字还原，未提交的工作不会被冲掉。注意**变更检测依赖 `git status`**：被
-`.gitignore` 忽略的路径即使列在 `allowedPaths` 里，`implement` 也看不到其改动（返回空 `changes`）。
+`dsh_run` 返回结构化结果：
 
-## 使用
-
-主模型调 `mcp__reasonix-write__reasonix_run`（`mode: "implement"`），桥接器返回
-`qlh.reasonix.changes.v1` 变更集（每文件 sha256、`diff_stat`、增删行数）与 `rollback_id`，
-**不回传 worker 原文**；是否保留由主模型决定，`mcp__reasonix-write__reasonix_rollback` 可回滚
-（文件在调用后被改动过则拒绝，而非覆盖）。脏树下无需先清空工作区。
-
-## vendor 与同步
-
-`src/`（12 个模块）、`test/`、`scripts/check-readme-links.mjs`、`scripts/acp-acceptance.mjs`、
-`prompts/`、`LICENSE` 都原样复制自
-[`reasonix-codex-bridge`](https://github.com/SgfKrc/reasonix-codex-bridge)，来源与逐文件 sha256
-记录在 `VENDOR.json`。**上游是唯一真源**：改了上游要重新 vendor，改了这边的副本会被 `--check`
-报成 `MODIFIED` 并在更新时覆盖（本仓库自己的 `cordis.patch.yml`、`README.md`、`CHANGELOG.md`、
-`package.json`、`.gitignore`、`scripts/sync-vendor.mjs` 不在 vendor 清单内）。
-
-```powershell
-node scripts/sync-vendor.mjs --check                    # 本地是否被改过 / 上游是否已漂移
-node scripts/sync-vendor.mjs --update --upstream <dir>  # 从上游重新复制并更新 VENDOR.json
-node --test                                             # 与上游同一套 112 个用例，零改动
+```json
+{
+  "schema": "qlh.dsh.subagent.result.v1",
+  "result": "ok",
+  "elapsedMs": 4597,
+  "truncated": false,
+  "answer": "..."
+}
 ```
 
-## 本机配置
+## 两种传输：per-call 与 ACP
 
-`cordis.patch.yml` 是**脱敏模板**：`args` / `env` 里的本机专属值都是占位符（`<workspace-root>`、
-`<path-to-reasonix-cli.exe>`、`<reasonix-model-ref>`）。装配后在
-`~/.dsh/profiles/<profile>/cordis.patch.yml` 里按 entry id 给出实际值，dsh 会在所有 bundle 层
-之后应用该层。
+与 Reasonix 通道的 `transport` 语义**对齐**：默认 `per-call`，ACP 需逐次显式 opt-in。
 
-> ⚠️ dsh 的覆盖是**整体替换 `config`**（`target[key] = value`），不是深合并：`transport` /
-> `serverName` / `command` / `toolCallTimeoutMs` / `failOnStartupError` 等字段都要写全，漏写即丢
-> 字段、通道不工作。直接抄本仓库 `cordis.patch.yml` 的完整结构、只替换占位符即可。
+| | `per-call`（默认） | `acp` |
+|---|---|---|
+| 实现 | `dsh --profile headless` | `dsh --profile acp` + ACP JSON-RPC |
+| 生命周期 | 一进程一任务，跑完即退 | 持久会话，可跨调用复用 |
+| 上下文 | 每次全新，无记忆 | **同一 session_id 保留上下文** |
+| 多轮追问 | ❌ | ✅ |
+| 前置 | 无 | `DSH_ACP_ENABLED=true` |
+
+用法：
+
+```
+# 第一次：不传 session_id ⇒ 新建会话，响应里返回 session_id
+dsh_run({ task: "...", transport: "acp" })
+  → { sessionId: "8f8be338-…", sessionCreated: true, turnsInSession: 1, answer: "..." }
+
+# 后续：带上同一个 session_id ⇒ 复用会话，保留上下文
+dsh_run({ task: "...", transport: "acp", session_id: "8f8be338-…" })
+  → { sessionId: "8f8be338-…", sessionCreated: false, turnsInSession: 2, answer: "..." }
+```
+
+（已实测：同 id 复用、`turnsInSession` 递增。）
+
+## ⚠️ ACP 路由必须打 patch
+
+`dsh --profile acp` **自身**把 `dsh-acp` 的 provider/model 钉死为
+`deepseek-official` / `deepseek-v4-flash`，这会**绕过** `settings.yaml` 里
+`agent-default-model` 的选择。在走 `DEEPSEEK_API_KEY` + 自定义 baseURL 的本机上，
+后果是 `session/prompt` 直接返回：
+
+```
+Internal error: turn failed: Authentication Fails, Your api key: ****c328 is invalid
+```
+
+注意 **`headless` 不受影响**（它读 settings 层的 `deepseek` 路由，实测正常）。
+两边因此会落在**不同网关**上 —— 这会让 harness 对比失去意义。
+
+修复方式是给 ACP 打一个按 entry id 覆盖的路由 patch（本仓库自带 `acp-route.patch.yml`）：
+
+```yaml
+- id: acp
+  config:
+    provider: deepseek
+    model: deepseek-v4.1-flash
+```
+
+然后在环境变量里挂上它：
+
+```toml
+DSH_ACP_ENABLED = "true"
+DSH_ACP_PATCH = "<workspace-root>/tools/dsh-subagent-bridge/acp-route.patch.yml"
+```
+
+**如果你换了网关或 model id，记得同步改这个 patch**，否则 ACP 会重新掉回
+`deepseek-official` 并鉴权失败。
+
+## 环境变量
+
+| 变量 | 作用 | 默认 |
+|---|---|---|
+| `DSH_BIN` | dsh 启动器路径（`.../@deepseek-ai/dsh/lib/bin.js`） | 自动探测（`DSH_HOME`、全局 npm、`APPDATA`/`LOCALAPPDATA`） |
+| `DSH_PROFILE` | 要启动的 profile | `headless` |
+| `DSH_WORKSPACE_ROOT` | 允许的工作区根；`cwd` 不得逃出 | 进程 cwd |
+| `DSH_SUBAGENT_PROVIDER` / `DSH_SUBAGENT_MODEL` | 覆盖子 agent 模型路由（仅报告用；实际路由由 profile 决定） | profile 自身默认 |
+| `DSH_ACP_ENABLED` | `true` 时开放 `transport=acp` | 关闭 |
+| `DSH_ACP_PATCH` | ACP 路由 patch 文件路径（见上节，**本机必需**） | 无 |
+| `BRIDGE_LOG` | 给每次 `dsh_run` 追加一行 JSON 摘要 | 不写 |
+
+`headless` profile 默认路由即 `deepseek-official` / `deepseek-flash`，无需额外配置。
+
+## 安全与边界（fail-closed）
+
+- **无 shell**：任务文本作为**单个 argv 元素**传给 `node <dsh bin>`，`shell:false`，
+  不经过任何 shell 解释。
+- **启动期拒绝**：`DSH_BIN` 指向不存在的文件时直接退出码 2，不静默降级。
+- **调用期拒绝**：空任务、超长任务（>16000 字符）、逃出工作区根的 `cwd`、
+  非正超时，都在 spawn 之前返回错误。
+- **硬上限**：任务 16000 字符、输出 24000 字符、超时上限 1800s、并发上限 4。
+- **超时整树终止**：Windows 上用 `taskkill /t /f` 杀掉整个进程树，避免留下孤儿
+  （已实测验证无残留）。
+- **不返回中间轨迹**：只回传子 agent 的最终答复与元数据。
 
 ## 已知限制
 
-- `reasonix_exec` 默认关闭（`execPolicy.configured: false`），当前无命令执行能力。
-- 结构化证据以 JSON 字符串呈现，DSH 侧看到的是文本。
-- `failOnStartupError: false`：Reasonix CLI 缺失时不会阻断 DSH 启动，而是重连耗尽后注销工具；
-  排障看宿主日志里 `mcp-client(reasonix)` 的告警。
+- **`per-call` 是一次性的**：每次 `dsh_run` 都是全新的 DSH agent，不共享上下文、无多轮追问。
+  需要多轮请用 `transport=acp`。
+- **ACP 会话存活于桥接器进程内**：`session_id` 随桥接器重启而失效，也不跨机器。
+  ACP 会话上限 8 个（`ACP_SESSION_CAP`）。
+- **模型由 profile 决定**：`DSH_SUBAGENT_*` 仅在 `dsh_status` 里**如实报告**，本桥接器
+  不会去改写 profile 的 `agent-default-model`。要换模型请改 profile 或 ACP 路由 patch。
+- **不含权限应答**：子 agent 若遇到需要批准的操作，行为由 DSH 自身策略决定。
 
-## 排障
+## 运行
 
-不用模型就能自查：`mcp__reasonix__reasonix_status`、`mcp__reasonix-write__reasonix_status`。
-它报告 `subagentRole`、`writePolicy`（`allowWrite`/`enabled`/`allowedPaths`/`cleanTreePolicy`/
-`errors`）、`modelRef` 及其 `modelRefSource`（环境变量 / `bridge.config.json` / `reasonix doctor`
-兜底）、`checkpoint.readyCount`。
+```powershell
+node --test          # 16 个离线用例，不联网、不调用模型
+node --check src/server.mjs
+```
+
+注册到 Codex（`~/.codex/config.toml`）：
+
+```toml
+[mcp_servers.dsh_subagent]
+type = "stdio"
+command = "node"
+args = ["<workspace-root>/tools/dsh-subagent-bridge/src/server.mjs"]
+startup_timeout_sec = 30
+tool_timeout_sec = 1800.0
+
+[mcp_servers.dsh_subagent.env]
+DSH_WORKSPACE_ROOT = "<workspace-root>"
+DSH_PROFILE = "headless"
+```
+
+改动后需重启 Codex。

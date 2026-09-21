@@ -1,0 +1,22 @@
+# 把 ACP profile 的模型路由对齐到你本机实际可用的 provider。
+#
+# 背景：`dsh --profile acp` 自身把 dsh-acp 的 provider/model 钉死为
+# `deepseek-official` / `deepseek-v4-flash`，这会**绕过** settings.yaml 里
+# `agent-default-model` 的选择。当本机并不使用官方直连端点（例如走了自建网关、
+# 或凭据只对另一个 provider 有效）时，`session/prompt` 会直接返回：
+#
+#   Internal error: turn failed: Authentication Fails, Your api key: ****xxxx is invalid
+#
+# 注意 `headless` profile 不受此影响 —— 它读 settings 层的默认路由，因此两边会
+# 落在**不同 provider** 上，使 harness 对比失去意义。本 patch 就是把这个偏差拉平。
+#
+# ⚠️ 下面的 provider / model 是**占位示例**，不是通用正确值：
+#   请改成你本机 `settings.yaml` 里实际可用的那一组
+#   （即在 settings 层 `agent-default-model` 下配置的 provider/model）。
+#   改完用一个真实 prompt 跑一遍 scripts/acp-probe.mjs 复验，再投入使用。
+#
+# 用法：把本文件路径经 DSH_ACP_PATCH 传给桥接器（见 README「ACP 路由必须打 patch」）。
+- id: acp
+  config:
+    provider: deepseek
+    model: deepseek-v4.1-flash
