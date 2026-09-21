@@ -83,6 +83,15 @@ export class AcpClient {
     });
     this.#child = child;
 
+    // 关键：持久 ACP 子进程不能拖住宿主的事件循环。
+    // 否则 MCP 宿主关闭 stdin 后，桥接器进程会因为子进程的 stdio 仍然活跃而无法退出
+    // （表现为调用方管道永不关闭 —— 已实测踩到）。unref 只影响事件循环引用计数，
+    // 不影响子进程本身，也不影响我们主动发起的请求。
+    child.unref();
+    child.stdin?.unref?.();
+    child.stdout?.unref?.();
+    child.stderr?.unref?.();
+
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk) => this.#onData(chunk));
     child.stderr.on('data', (c) => process.stderr.write(`[${'dsh-subagent-bridge'}:acp] ${c}`));

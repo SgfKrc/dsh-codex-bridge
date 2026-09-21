@@ -199,3 +199,15 @@ test('an unknown ACP session_id is rejected rather than silently creating a new 
   assert.equal(r.isError, true);
   assert.match(r.content[0].text, /unknown ACP session_id/);
 });
+
+test('the server exits on its own once stdin ends (no lingering handles)', async () => {
+  // 回归：持久 ACP 子进程的 stdio 曾把事件循环钉住，导致 stdin 结束后桥接器进程不退出，
+  // 调用方管道永不关闭（表现为 Codex 每次 ACP 调用都挂死）。这里断言进程会自然退出。
+  const started = Date.now();
+  await session([
+    INIT,
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'dsh_status', arguments: {} } },
+  ]);
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 15000, `server took ${elapsed}ms to exit after stdin end`);
+});
