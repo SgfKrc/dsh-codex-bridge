@@ -7,6 +7,29 @@ Codex 可调用 MCP 工具的零依赖 stdio server。
 > vendor 副本（外加一份 DSH 装配模板）。自 0.2.0 起整体替换为本桥接器，接入的 harness
 > 从 Reasonix 改为 DSH 本身。Git 远端不变（`SgfKrc/dsh-codex-bridge`）。
 
+## [0.3.0] - 2026-09-24
+
+### Added
+
+- **抗升级**：入口解析补充 `NPM_CONFIG_PREFIX` 与 `PATH` 上的 `dsh` / `dsh.cmd` / `dsh.ps1`，
+  并支持从 shim 反解真实 `lib/bin.js`（先取同目录的 npm 布局，再从 shim 文本解析，
+  识别 `%dp0%` / `%~dp0` / `$basedir` 前缀以及绝对与相对路径）—— 调用方因此**始终不需要 shell**，
+  dsh 换安装形态或换版本都不会失联。
+- **启动期版本门** `DSH_MIN_VERSION`（默认 `0.1.5`）：启动时读入口所属包的 `package.json`
+  （只认 `name === @deepseek-ai/dsh`）取得实际版本；比较只看 `major.minor.patch`，
+  因此 `0.1.5-rc.2` 这类预发布后缀不影响判定。低于下限拒绝启动，版本读不出来只警告、不阻断。
+- `dsh_status.dsh` 报出 `launcher` / `source` / `version` / `versionSource` / `minVersion` / `versionCheck`。
+- 8 个新离线用例（launcher 来源、版本门、放宽门限、预发布版本、同名异包、两种 shim 布局、
+  无 launcher 拒绝），离线套件增至 25 个。
+
+### Documented
+
+- README 增「抗升级」一节，并记录升级 dsh 可能引入的 **profile provider 冲突**：0.1.7-rc.1 的
+  `dsh-base` 新增官方 `llm-deepseek`（`DeepSeek Messages adapter`），与自定义网关的 `llm-pi-ai`
+  争用同一个 provider id `deepseek`，会让请求落到官方端点并报识鉴权失败
+  （`AUTH: Authentication Fails, Your api key: ****xxxx is invalid`，即使该 key 在自建网关上有效）。
+  在用到自定义网关的 profile 的 `cordis.patch.yml` 里以 `- id: llm-deepseek` + `disabled: true` 禁用它。
+
 ## [0.2.0] - 2026-09-21
 
 ### Changed

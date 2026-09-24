@@ -6,6 +6,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -210,4 +212,121 @@ test('the server exits on its own once stdin ends (no lingering handles)', async
   ]);
   const elapsed = Date.now() - started;
   assert.ok(elapsed < 15000, `server took ${elapsed}ms to exit after stdin end`);
+});
+
+// ── 抗升级：入口解析与版本门 ──────────────────────────────────────────────
+
+/**
+ * 造一个最小 dsh 包：`<root>/node_modules/@deepseek-ai/dsh/{lib/bin.js,package.json}`。
+ * 只用于入口解析与版本门断言；被拒绝的调用都在 spawn 之前返回，不会真的执行它。
+ */
+function makeFakeDshPackage(version, name = '@deepseek-ai/dsh') {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'dsh-fixture-'));
+  const pkgDir = path.join(root, 'node_modules', '@deepseek-ai', 'dsh');
+  mkdirSync(path.join(pkgDir, 'lib'), { recursive: true });
+  writeFileSync(path.join(pkgDir, 'lib', 'bin.js'), '#!/usr/bin/env node\n', 'utf8');
+  writeFileSync(path.join(pkgDir, 'package.json'), JSON.stringify({ name, version }, null, 2), 'utf8');
+  return { root, bin: path.join(pkgDir, 'lib', 'bin.js') };
+}
+
+test('dsh_status reports the launcher source and the version gate', async () => {
+  const { responses } = await session([
+    INIT,
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'dsh_status', arguments: {} } },
+  ]);
+  const status = JSON.parse(responses[2].result.content[0].text);
+  assert.equal(status.dsh.source, 'DSH_BIN');
+  assert.equal(status.dsh.minVersion, '0.1.5');
+  // 测试桩不是 dsh 包 ⇒ 版本不可知：只警告，不做判定
+  assert.equal(status.dsh.version, null);
+  assert.equal(status.dsh.versionCheck, 'unknown');
+  assert.equal(status.dsh.launcher, status.launcher);
+});
+
+test('a version below DSH_MIN_VERSION is refused at startup', async () => {
+  const fixture = makeFakeDshPackage('0.0.9');
+  try {
+    const { responses, err } = await session([INIT], { DSH_BIN: fixture.bin });
+    assert.equal(responses[1], undefined);
+    assert.match(err, /below the required minimum 0\.1\.5/);
+  } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+});
+
+test('DSH_MIN_VERSION can be lowered deliberately', async () => {
+  const fixture = makeFakeDshPackage('0.0.9');
+  try {
+    const { responses } = await session([INIT], { DSH_BIN: fixture.bin, DSH_MIN_VERSION: '0.0.1' });
+    assert.equal(responses[1].result.serverInfo.name, 'dsh-subagent-bridge');
+  } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+});
+
+test('a pre-release of the minimum version passes the gate (rc suffix ignored)', async () => {
+  const fixture = makeFakeDshPackage('0.1.5-rc.2');
+  try {
+    const { responses } = await session([INIT], { DSH_BIN: fixture.bin });
+    assert.equal(responses[1].result.serverInfo.name, 'dsh-subagent-bridge');
+  } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+});
+
+test('a foreign package at DSH_BIN is not mistaken for dsh', async () => {
+  const fixture = makeFakeDshPackage('9.9.9', 'some-other-package');
+  try {
+    const { responses, err } = await session([
+      INIT,
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'dsh_status', arguments: {} } },
+    ], { DSH_BIN: fixture.bin });
+    const status = JSON.parse(responses[2].result.content[0].text);
+    assert.equal(status.dsh.version, null);
+    assert.match(err, /cannot determine the dsh version/);
+  } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+});
+
+test('a PATH dsh shim is resolved to the real bin.js without a shell', async () => {
+  const fixture = makeFakeDshPackage('0.1.7-rc.1');
+  try {
+    // npm 全局布局：<prefix>/dsh.cmd 与 <prefix>/node_modules/@deepseek-ai/dsh/lib/bin.js 同级
+    writeFileSync(path.join(fixture.root, 'dsh.cmd'),
+      '@ECHO off' + String.fromCharCode(13, 10)
+      + 'SET _prog=node' + String.fromCharCode(13, 10)
+      + '"%_prog%" "%dp0%\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" %*' + String.fromCharCode(13, 10), 'utf8');
+    const { responses } = await session([
+      INIT,
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'dsh_status', arguments: {} } },
+    ], { DSH_BIN: '', APPDATA: '', LOCALAPPDATA: '', PATH: fixture.root });
+    const status = JSON.parse(responses[2].result.content[0].text);
+    assert.equal(status.dsh.launcher, fixture.bin);
+    assert.match(status.dsh.source, /PATH shim \(dsh\.cmd\)/);
+    assert.equal(status.dsh.version, '0.1.7-rc.1');
+    assert.equal(status.dsh.versionCheck, 'ok');
+  } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+});
+
+test('a shim pointing at a relative store path is reverse-resolved', async () => {
+  const fixture = makeFakeDshPackage('0.1.7-rc.1');
+  try {
+    // shim 与包不同目录：文本里是相对前缀（%~dp0\..\…），反解后应落到真实包
+    const shimDir = path.join(fixture.root, 'shims');
+    mkdirSync(shimDir, { recursive: true });
+    writeFileSync(path.join(shimDir, 'dsh.cmd'),
+      '@ECHO off' + String.fromCharCode(13, 10)
+      + '"%_prog%" "%~dp0\\..\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" %*' + String.fromCharCode(13, 10), 'utf8');
+    const { responses } = await session([
+      INIT,
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'dsh_status', arguments: {} } },
+    ], { DSH_BIN: '', APPDATA: '', LOCALAPPDATA: '', PATH: shimDir });
+    const status = JSON.parse(responses[2].result.content[0].text);
+    assert.equal(status.dsh.launcher, fixture.bin);
+    assert.equal(status.dsh.version, '0.1.7-rc.1');
+  } finally { rmSync(fixture.root, { recursive: true, force: true }); }
+});
+
+test('with no DSH_BIN and no dsh on PATH the bridge refuses loudly', async () => {
+  const empty = mkdtempSync(path.join(os.tmpdir(), 'dsh-empty-'));
+  try {
+    const { responses, err } = await session([INIT], {
+      DSH_BIN: '', DSH_HOME: '', NPM_CONFIG_PREFIX: '', APPDATA: '', LOCALAPPDATA: '', PATH: empty,
+    });
+    assert.equal(responses[1], undefined);
+    assert.match(err, /cannot locate the dsh launcher/);
+  } finally { rmSync(empty, { recursive: true, force: true }); }
 });

@@ -1,6 +1,6 @@
 {
   "name": "dsh-subagent-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Zero-dependency MCP stdio bridge that publishes the DSH headless/ACP harness as a Codex-callable subagent tool, so DSH and Reasonix can be compared as subagent harnesses on the same model.",
   "type": "module",

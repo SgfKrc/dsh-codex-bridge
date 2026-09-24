@@ -8,6 +8,12 @@
  * - **无 shell**：一律 `shell:false` 直接 spawn `node <dsh bin> --profile headless <task>`，
  *   任务文本作为**单个 argv 元素**传入，不经过任何 shell 解释，因此不担心注入。
  * - **fail-closed**：找不到 dsh 入口、任务为空或超长、cwd 逃出允许根，都直接拒绝而不是猜。
+ * - **抗升级**：入口从不硬编码路径或版本 —— 依次看 `DSH_BIN`、`DSH_HOME/lib/bin.js`、
+ *   npm 全局前缀（`NPM_CONFIG_PREFIX`/`APPDATA`/`LOCALAPPDATA`），最后扫 `PATH` 上的 dsh shim
+ *   （`dsh`/`dsh.cmd`/`dsh.ps1`）：先从 shim 同目录的 npm 布局取 `lib/bin.js`，取不到就从 shim
+ *   文本里反解真实入口，因此**不需要 shell**、也不会因为换安装形态或升级而失联。启动时读包内
+ *   `package.json`（只认 `name === @deepseek-ai/dsh`）得到实际版本：低于 `DSH_MIN_VERSION` 拒绝
+ *   启动，读不出来只警告不阻断（测试桩/异常布局不该被版本门误杀）。
  * - **有界**：任务长度、超时、输出长度、并发数都有硬上限；超时按**进程树**终止。
  * - **只读语义**：本工具默认以只读沙箱启动子 agent（DSH 侧 `--profile headless` 走
  *   workspace-write，但调用方不应依赖它写文件）。它返回子 agent 的最终答复，
@@ -33,6 +39,12 @@ const HARD_TIMEOUT_SECONDS_CAP = 1800;
 const DEFAULT_TIMEOUT_SECONDS = 900;
 const QUEUE_CAP = 4;
 
+// dsh 包身份与最低可用版本。默认下限覆盖已知可用的 0.1.5 系列（含 -rc.N）与 0.1.7 系列；
+// 比较只看 major.minor.patch，忽略 `-rc.N` / `-alpha.N` 之类的预发布后缀。
+const DSH_PACKAGE_NAME = '@deepseek-ai/dsh';
+const DSH_BIN_RELATIVE = path.join('node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
+const DEFAULT_MIN_DSH_VERSION = '0.1.5';
+
 function log(message) { process.stderr.write(`[${SERVER_NAME}] ${message}\n`); }
 function refuse(reason, hint) {
   log(`refusing to start: ${reason}`);
@@ -45,37 +57,143 @@ function envTrim(name) {
   return v || '';
 }
 
-// ── dsh 入口解析：从不硬编码路径 ─────────────────────────────────────────────
-// 顺序：DSH_BIN（显式）→ DSH_HOME 下的 lib/bin.js → 全局 npm 安装位置 → PATH 上的 dsh。
-function resolveDshBin() {
+// ── 版本工具：只比较 major.minor.patch，刻意忽略预发布后缀 ───────────────────
+function parseVersion(value) {
+  const match = String(value ?? '').match(/\bv?(\d+)\.(\d+)(?:\.(\d+))?/);
+  if (!match) return null;
+  return { major: Number(match[1]), minor: Number(match[2]), patch: match[3] === undefined ? 0 : Number(match[3]) };
+}
+
+/** 两边都解析得出才比较，否则返回 null（不可比 ⇒ 不做版本判定）。 */
+function compareVersions(left, right) {
+  const a = parseVersion(left);
+  const b = parseVersion(right);
+  if (!a || !b) return null;
+  for (const key of ['major', 'minor', 'patch']) {
+    if (a[key] !== b[key]) return a[key] < b[key] ? -1 : 1;
+  }
+  return 0;
+}
+
+// ── dsh 入口解析：从不硬编码路径或版本 ──────────────────────────────────────
+/** PATH 上所有可能叫 dsh 的可执行/shim（Windows 会带 .cmd/.ps1/.exe）。 */
+function dshNamesOnPath() {
+  const dirs = (process.env.PATH ?? '').split(path.delimiter).filter(Boolean);
+  const names = process.platform === 'win32'
+    ? ['dsh', 'dsh.cmd', 'dsh.exe', 'dsh.ps1', 'dsh.bat']
+    : ['dsh'];
+  const found = [];
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = path.join(dir, name);
+      try { if (existsSync(candidate)) found.push(candidate); } catch { /* 跳过不可读目录 */ }
+    }
+  }
+  return found;
+}
+
+/** 从 npm 生成的 shim 文本里反解真实 bin.js —— 这样调用方永远不需要 shell。 */
+function binFromShim(shimPath) {
+  let text;
+  try {
+    if (statSync(shimPath).size > 64 * 1024) return '';   // shim 应该是小文本
+    text = readFileSync(shimPath, 'utf8');
+  } catch { return ''; }
+  const match = text.match(/[A-Za-z0-9_@.\\/:%~{}$-]*node_modules[\\/]@deepseek-ai[\\/]dsh[\\/]lib[\\/]bin\.js/);
+  if (!match) return '';
+  const at = match[0].indexOf('node_modules');
+  const rel = match[0].slice(at);
+  // shim 前缀可能是 %dp0% / $basedir（npm 生成）或绝对路径 / 相对前缀（其他包管理器）。
+  // 去掉占位符后：绝对路径直接当基准，否则落到 shim 所在目录再拼。
+  const prefix = match[0].slice(0, at).replace(/^(%~?dp0%?|\$basedir|\$\{basedir\})[\\/]?/i, '');
+  const base = /^[A-Za-z]:[\\/]/.test(prefix) ? prefix : path.join(path.dirname(shimPath), prefix);
+  return path.join(base, ...rel.split(/[\\/]+/));
+}
+
+/** 返回 { bin, source }；找不到就抛出（调用方 fail-closed）。 */
+function resolveDshLauncher() {
   const explicit = envTrim('DSH_BIN');
   if (explicit) {
     if (!existsSync(explicit)) throw new Error(`DSH_BIN points to a missing file: ${explicit}`);
-    return explicit;
+    return { bin: explicit, source: 'DSH_BIN' };
   }
+
   const candidates = [];
   const dshHome = envTrim('DSH_HOME');
-  if (dshHome) candidates.push(path.join(dshHome, 'lib', 'bin.js'));
-  const appData = envTrim('APPDATA');
-  if (appData) {
-    candidates.push(path.join(appData, 'npm', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'));
+  if (dshHome) candidates.push({ bin: path.join(dshHome, 'lib', 'bin.js'), source: 'DSH_HOME' });
+
+  const npmPrefix = envTrim('NPM_CONFIG_PREFIX');
+  if (npmPrefix) candidates.push({ bin: path.join(npmPrefix, DSH_BIN_RELATIVE), source: 'NPM_CONFIG_PREFIX' });
+
+  for (const [envName, label] of [['APPDATA', 'npm global (APPDATA)'], ['LOCALAPPDATA', 'npm global (LOCALAPPDATA)']]) {
+    const root = envTrim(envName);
+    if (root) candidates.push({ bin: path.join(root, 'npm', DSH_BIN_RELATIVE), source: label });
   }
-  const localAppData = envTrim('LOCALAPPDATA');
-  if (localAppData) {
-    candidates.push(path.join(localAppData, 'npm', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js'));
+
+  // PATH 上的 dsh：优先 shim 同目录的 npm 布局，其次从 shim 文本反解
+  for (const shim of dshNamesOnPath()) {
+    const sibling = path.join(path.dirname(shim), DSH_BIN_RELATIVE);
+    if (existsSync(sibling)) {
+      candidates.push({ bin: sibling, source: `PATH shim (${path.basename(shim)})` });
+      continue;
+    }
+    const extracted = binFromShim(shim);
+    if (extracted && existsSync(extracted)) candidates.push({ bin: extracted, source: `PATH shim (${path.basename(shim)})` });
   }
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate.bin)) return candidate;
   }
   throw new Error(
     'cannot locate the dsh launcher. Set DSH_BIN to <...>/@deepseek-ai/dsh/lib/bin.js, '
-    + `or install dsh globally. Probed: ${candidates.join(', ') || '(no candidates)'}`,
+    + `or install dsh globally. Probed: ${candidates.map((c) => c.bin).join(', ') || '(no candidates)'}`,
   );
 }
 
-const DSH_BIN = (() => {
-  try { return resolveDshBin(); } catch (error) { refuse(error.message); return ''; }
+/** 从 bin.js 往上找包清单，只认 dsh 自己；找不到或名字不符都返回 null（不猜）。 */
+function readDshVersion(binPath) {
+  let dir = path.dirname(binPath);
+  for (let depth = 0; depth < 4; depth += 1) {
+    const manifest = path.join(dir, 'package.json');
+    if (existsSync(manifest)) {
+      try {
+        const pkg = JSON.parse(readFileSync(manifest, 'utf8'));
+        if (pkg?.name !== DSH_PACKAGE_NAME) return null;
+        return { version: String(pkg.version ?? ''), packagePath: manifest };
+      } catch { return null; }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
+const DSH_MIN_VERSION = envTrim('DSH_MIN_VERSION') || DEFAULT_MIN_DSH_VERSION;
+
+const LAUNCHER = (() => {
+  try { return resolveDshLauncher(); } catch (error) { refuse(error.message); return { bin: '', source: 'unresolved' }; }
 })();
+const DSH_BIN = LAUNCHER.bin;
+
+const DSH_VERSION = (() => {
+  const found = readDshVersion(DSH_BIN);
+  if (!found) return { version: null, packagePath: null, check: 'unknown' };
+  const cmp = compareVersions(found.version, DSH_MIN_VERSION);
+  if (cmp === null) return { version: found.version, packagePath: found.packagePath, check: 'unknown' };
+  return { version: found.version, packagePath: found.packagePath, check: cmp < 0 ? 'below-minimum' : 'ok' };
+})();
+
+// 版本门：只在**确定低于下限**时拒绝启动。读不出或不认得的布局只警告 ——
+// 否则测试桩、隔离部署这类“起点不是 dsh 包”的场景会被版本门误杀。
+if (DSH_VERSION.check === 'below-minimum') {
+  refuse(
+    `dsh ${DSH_VERSION.version} is below the required minimum ${DSH_MIN_VERSION}`,
+    'Upgrade dsh, or set DSH_MIN_VERSION to a lower value to relax the gate deliberately.',
+  );
+} else if (DSH_VERSION.check === 'unknown') {
+  log(`warning: cannot determine the dsh version at ${DSH_BIN || '(unresolved)'}; version gate skipped (minimum ${DSH_MIN_VERSION})`);
+}
 
 const DSH_PROFILE = envTrim('DSH_PROFILE') || 'headless';
 
@@ -233,6 +351,14 @@ async function callTool(name, args) {
         schema: 'qlh.dsh.subagent.status.v1',
         server: SERVER_NAME,
         launcher: DSH_BIN,
+        dsh: {
+          launcher: DSH_BIN,
+          source: LAUNCHER.source,
+          version: DSH_VERSION.version,
+          versionSource: DSH_VERSION.packagePath,
+          minVersion: DSH_MIN_VERSION,
+          versionCheck: DSH_VERSION.check,
+        },
         profile: DSH_PROFILE,
         workspaceRoot: WORKSPACE_ROOT,
         subagentModel: { provider: MODEL_PROVIDER || null, model: MODEL_ID || null, source: MODEL_ID ? 'DSH_SUBAGENT_* environment' : 'profile default' },
@@ -427,4 +553,4 @@ process.stdin.on('data', (chunk) => {
   }
 });
 
-log(`ready: launcher=${DSH_BIN} profile=${DSH_PROFILE} root=${WORKSPACE_ROOT}`);
+log(`ready: launcher=${DSH_BIN} (${LAUNCHER.source}) dsh=${DSH_VERSION.version ?? 'unknown'} profile=${DSH_PROFILE} root=${WORKSPACE_ROOT}`);

@@ -107,7 +107,8 @@ DSH_ACP_PATCH = "<workspace-root>/tools/dsh-subagent-bridge/acp-route.patch.yml"
 
 | 变量 | 作用 | 默认 |
 |---|---|---|
-| `DSH_BIN` | dsh 启动器路径（`.../@deepseek-ai/dsh/lib/bin.js`） | 自动探测（`DSH_HOME`、全局 npm、`APPDATA`/`LOCALAPPDATA`） |
+| `DSH_BIN` | dsh 入口（`.../@deepseek-ai/dsh/lib/bin.js`） | 自动探测：`DSH_HOME` → `NPM_CONFIG_PREFIX` → `APPDATA`/`LOCALAPPDATA` 下的全局 npm → `PATH` 上的 `dsh`/`dsh.cmd`/`dsh.ps1` |
+| `DSH_MIN_VERSION` | 最低可接受的 dsh 版本；低于它拒绝启动 | `0.1.5` |
 | `DSH_PROFILE` | 要启动的 profile | `headless` |
 | `DSH_WORKSPACE_ROOT` | 允许的工作区根；`cwd` 不得逃出 | 进程 cwd |
 | `DSH_SUBAGENT_PROVIDER` / `DSH_SUBAGENT_MODEL` | 覆盖子 agent 模型路由（仅报告用；实际路由由 profile 决定） | profile 自身默认 |
@@ -129,6 +130,32 @@ DSH_ACP_PATCH = "<workspace-root>/tools/dsh-subagent-bridge/acp-route.patch.yml"
   （已实测验证无残留）。
 - **不返回中间轨迹**：只回传子 agent 的最终答复与元数据。
 
+## 抗升级
+
+入口解析与版本判定都刻意不绑定具体版本：
+
+- **入口**：候选顺序 `DSH_BIN` → `DSH_HOME/lib/bin.js` → `NPM_CONFIG_PREFIX` → `APPDATA`/`LOCALAPPDATA`
+  下的全局 npm → `PATH` 上的 `dsh`/`dsh.cmd`/`dsh.ps1`。shim 一律**先取同目录的 npm 布局，再从 shim
+  文本反解真实 `lib/bin.js`**（识别 `%dp0%` / `%~dp0` / `$basedir` 前缀，以及绝对与相对路径），
+  因此调用方**从不需要 shell**；dsh 换安装形态、换版本都不会失联。
+- **版本门**：启动时读入口所属包的 `package.json`（只认 `name === @deepseek-ai/dsh`）得到实际版本，
+  与 `DSH_MIN_VERSION`（默认 `0.1.5`）比较。比较只看 `major.minor.patch`，所以 `0.1.5-rc.2` 这类
+  预发布后缀不影响判定。**低于下限拒绝启动**；版本读不出来（测试桩、异常布局）只警告、不阻断 ——
+  否则"起点不是 dsh 包"的合法场景会被误杀。
+- 两个结果都在 `dsh_status.dsh` 里：`launcher` / `source` / `version` / `versionSource` / `minVersion` /
+  `versionCheck`（`ok` / `below-minimum` / `unknown`）。
+
+> ⚠️ **升级 dsh 后要留意 profile 层的 provider 冲突**：0.1.7-rc.1 的 `dsh-base` 新增了官方
+> `llm-deepseek`（`DeepSeek Messages adapter`）entry，它会和自定义网关的 `llm-pi-ai` 争用同一个
+> provider id `deepseek`。争输的一方若落到官方端点，就表现为
+> `AUTH: Authentication Fails, Your api key: ****xxxx is invalid`（即使该 key 在自建网关上有效）。
+> 在用到自定义网关的 profile 的 `cordis.patch.yml` 里禁用它即可：
+>
+> ```yaml
+> - id: llm-deepseek
+>   disabled: true
+> ```
+
 ## 已知限制
 
 - **`per-call` 是一次性的**：每次 `dsh_run` 都是全新的 DSH agent，不共享上下文、无多轮追问。
@@ -142,7 +169,7 @@ DSH_ACP_PATCH = "<workspace-root>/tools/dsh-subagent-bridge/acp-route.patch.yml"
 ## 运行
 
 ```powershell
-node --test          # 16 个离线用例，不联网、不调用模型
+node --test          # 25 个离线用例，不联网、不调用模型
 node --check src/server.mjs
 ```
 
