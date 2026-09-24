@@ -2,6 +2,9 @@
 
 把 **DSH headless / ACP harness 发布成 Codex 可调用的 MCP 工具** —— 零依赖的 stdio MCP server。
 
+> **位置**：本仓库在工作区里的目录名是 `tools/dsh-codex-bridge/`（Git 远端 `SgfKrc/dsh-codex-bridge`），
+> 而仓库内自称 **dsh-subagent-bridge** —— 两者指同一个东西。下文示例里的路径一律写**实际目录名**。
+>
 > **仓库沿革**：本仓库原名 `dsh-codex-bridge`，早期内容是 Reasonix worker 桥接器的
 > vendor 副本（含 DSH 装配模板）。自 **v0.2.0** 起改为本桥接器：不再 vendor 任何
 > Reasonix 代码，接入的 harness 也从 Reasonix 换成了 DSH 本身。旧的 vendor 内容与
@@ -97,7 +100,7 @@ Internal error: turn failed: Authentication Fails, Your api key: ****c328 is inv
 
 ```toml
 DSH_ACP_ENABLED = "true"
-DSH_ACP_PATCH = "<workspace-root>/tools/dsh-subagent-bridge/acp-route.patch.yml"
+DSH_ACP_PATCH = "<workspace-root>/tools/dsh-codex-bridge/acp-route.patch.yml"
 ```
 
 **如果你换了网关或 model id，记得同步改这个 patch**，否则 ACP 会重新掉回
@@ -179,7 +182,7 @@ node --check src/server.mjs
 [mcp_servers.dsh_subagent]
 type = "stdio"
 command = "node"
-args = ["<workspace-root>/tools/dsh-subagent-bridge/src/server.mjs"]
+args = ["<workspace-root>/tools/dsh-codex-bridge/src/server.mjs"]
 startup_timeout_sec = 30
 tool_timeout_sec = 1800.0
 
